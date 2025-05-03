@@ -40,9 +40,9 @@ DEFAULT_PARAMETERS = {
     
     # Solar system parameters
     'solar_construction_time': {
-        'value': 1.0,
+        'value': 2.0,
         'min': 0.5,
-        'max': 2.0,
+        'max': 5.0,
         'step': 0.5,
         'citation': "Typical construction time for utility-scale solar projects",
         'url': None
@@ -122,9 +122,9 @@ DEFAULT_PARAMETERS = {
         'url': "https://www.lazard.com/research-insights/levelized-cost-of-energy-version-17-0/"
     },
     'nuclear_construction_time': {
-        'value': 5,
+        'value': 7,
         'min': 3,
-        'max': 10,
+        'max': 15,
         'step': 1,
         'citation': "IAEA Construction Time Database, Average construction time for nuclear power plants",
         'url': "https://www.iaea.org/resources/databases/construction-time-database"
@@ -610,7 +610,7 @@ def create_comparison_table(solar_costs, nuclear_costs, solar_capacity_mw, batte
     # Create comparison data
     comparison_data = {
         'Metric': [
-            'System capacity',
+            'Peak power capacity',
             'Annual energy output',
             'Capacity factor',
             'System reliability',
@@ -964,22 +964,27 @@ def create_sensitivity_analysis(solar_costs, nuclear_costs, power_output):
     return fig_lcoe, fig_cost
 
 def main():
-    st.title("⚡ Compare the cost of powering a large load with solar and nuclear")
+    st.title("⚡ Compare the costs of powering a large load with solar and nuclear")
     st.markdown("""
 Imagine that you want to build a new data center or factory or whatever. 
 You need something like 600 MW (configurable) of power to run your new facility, with high reliability.
-And you would like it to be low carbon.
-Your two options are 
-(1) to build a new solar+storage plant that will provide power most of the time, or
-(2) you can build a nuclear plant that will run continuously aside from refueling outages and other maintenance. 
+And you would like it to be low carbon. 
+For this sake of this simplified use case:
+1. to build a new solar+storage plant that will provide power most of the time, or
+2. you can build a nuclear plant that will run continuously aside from refueling outages and other maintenance. 
 Which plant will be most cost effective?
 Are the construction times acceptable?
 Is the reliability pattern acceptable?
 Play around with this app to find out. 
                 
+    There are lots of simplifying assumptions in this model. See the source code for details. 
+    But perhaps most importantly I'm evaluating costs over a 40 year period, 
+    but only considering the energy produced for the period of operation within that period. 
+                
     Author: Paul Hines
     Originally posted on LinkedIn: https://www.linkedin.com/in/paul-hines-energy/
     Caveat: This is a personal project, and has nothing to do with my employer(s)
+    Source code: https://github.com/phines/compare-power-plants
     """)
     
     # Initialize session state for metric type if it doesn't exist
