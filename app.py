@@ -977,14 +977,14 @@ Are the construction times acceptable?
 Is the reliability pattern acceptable?
 Play around with this app to find out. 
                 
-    There are lots of simplifying assumptions in this model. See the source code for details. 
-    But perhaps most importantly I'm evaluating costs over a 40 year period, 
-    but only considering the energy produced for the period of operation within that period. 
+There are lots of simplifying assumptions in this model. See the source code for details. 
+But perhaps most importantly I'm evaluating costs over a 40 year period, 
+but only considering the energy produced for the period of operation within that period. 
                 
-    Author: Paul Hines
-    Originally posted on LinkedIn: https://www.linkedin.com/in/paul-hines-energy/
-    Caveat: This is a personal project, and has nothing to do with my employer(s)
-    Source code: https://github.com/phines/compare-power-plants
+- Author: Paul Hines
+- LinkedIn: https://www.linkedin.com/in/paul-hines-energy/
+- Caveat: This is a personal project, and has nothing to do with my employer(s)
+- Source code: https://github.com/phines/compare-power-plants
     """)
     
     # Initialize session state for metric type if it doesn't exist
