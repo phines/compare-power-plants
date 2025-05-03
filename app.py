@@ -966,7 +966,20 @@ def create_sensitivity_analysis(solar_costs, nuclear_costs, power_output):
 def main():
     st.title("⚡ Compare the cost of powering a large load with solar and nuclear")
     st.markdown("""
-    This app compares the costs of supplying power to a large load using either solar power with storage or nuclear power.
+ Imagine that you want to build a new data center or factory or whatever. 
+You need something like 600 MW (configurable) of power to run your new facility, with high reliability.
+And you would like it to be low carbon.
+Your two options are 
+(1) to build a new solar+storage plant that will provide power most of the time, or
+(2) you can build a nuclear plant that will run continuously aside from refueling outages and other maintenance. 
+Which plant will be most cost effective?
+Are the construction times acceptable?
+Is the reliability pattern acceptable?
+Play around with this app to find out. 
+                
+    Author: Paul Hines
+    Originally posted on LinkedIn: https://www.linkedin.com/in/paul-hines-energy/
+    Caveat: This is a personal project, and has nothing to do with my employer(s)
     """)
     
     # Initialize session state for metric type if it doesn't exist
