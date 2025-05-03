@@ -966,7 +966,7 @@ def create_sensitivity_analysis(solar_costs, nuclear_costs, power_output):
 def main():
     st.title("⚡ Compare the cost of powering a large load with solar and nuclear")
     st.markdown("""
- Imagine that you want to build a new data center or factory or whatever. 
+Imagine that you want to build a new data center or factory or whatever. 
 You need something like 600 MW (configurable) of power to run your new facility, with high reliability.
 And you would like it to be low carbon.
 Your two options are 
@@ -1000,7 +1000,7 @@ Play around with this app to find out.
     )
     
     target_power_mw = st.sidebar.slider(
-        "System load size (MW)",
+        "Facility power needs (MW)",
         min_value=DEFAULT_PARAMETERS['target_power_mw']['min'],
         max_value=DEFAULT_PARAMETERS['target_power_mw']['max'],
         value=DEFAULT_PARAMETERS['target_power_mw']['value'],
