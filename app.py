@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta, date
 import os
 from plotly.subplots import make_subplots
+from scipy.optimize import minimize
+import time
 
 # Set page config
 st.set_page_config(
@@ -17,6 +19,11 @@ st.set_page_config(
 FACILITY_SIZE_MW = 600
 YEARS = 40
 HOURS_PER_YEAR = 8760
+
+# Optimization parameters
+SOLAR_CAPACITY_STEP = 100  # MW
+BATTERY_CAPACITY_STEP = 100  # MWh
+MAX_ITERATIONS = 100000  # Not sure how many needed.
 
 # Default parameters with detailed citations
 DEFAULT_PARAMETERS = {
@@ -612,7 +619,6 @@ def create_comparison_table(solar_costs, nuclear_costs, solar_capacity_mw, batte
         'Metric': [
             'Peak power capacity',
             'Annual energy output',
-            'Capacity factor',
             'System reliability',
             'Upfront cost',
             'Annual O&M cost',
@@ -627,7 +633,6 @@ def create_comparison_table(solar_costs, nuclear_costs, solar_capacity_mw, batte
         'Solar PV + Storage': [
             f"{solar_capacity_mw:,} MW",
             f"{solar_annual_energy:,.0f} MWh",
-            f"{solar_annual_energy / (solar_capacity_mw * HOURS_PER_YEAR):.1%}",
             f"{reliability:.1%}",
             f"${solar_costs['total_initial_cost_usd']:,.0f}",
             f"${solar_costs['annual_maintenance_usd']:,.0f}/year",
@@ -642,7 +647,6 @@ def create_comparison_table(solar_costs, nuclear_costs, solar_capacity_mw, batte
         'Nuclear': [
             f"{FACILITY_SIZE_MW:,} MW",
             f"{nuclear_annual_energy:,.0f} MWh",
-            f"{nuclear_costs['nuclear_capacity_factor']:.1%}",
             f"{nuclear_costs['nuclear_capacity_factor']:.1%}",
             f"${nuclear_costs['nuclear_construction_cost_usd']:,.0f}",
             f"${nuclear_costs['nuclear_annual_fuel_cost_usd'] + nuclear_costs['nuclear_annual_maintenance_usd']:,.0f}/year",
@@ -659,6 +663,8 @@ def create_comparison_table(solar_costs, nuclear_costs, solar_capacity_mw, batte
     # Create DataFrame and remove any empty rows
     df = pd.DataFrame(comparison_data)
     df = df.dropna(how='all')  # Remove rows where all values are NaN
+    df = df.dropna(how='any')  # Remove rows where any value is NaN
+    df = df.reset_index(drop=True)  # Reset index after dropping rows
     return df
 
 def calculate_capacity_factor(solar_data, solar_capacity_mw):
@@ -872,16 +878,23 @@ def calculate_lcoe(solar_costs, nuclear_costs, power_output, discount_rate_pct=7
         solar_replacement_cost_factor
     )
     
-    # For solar: total present value of costs / (annual energy * project years)
-    # Solar construction is assumed to take 1 year, so operational period is YEARS - 1
-    solar_operational_years = YEARS - 1
-    solar_lcoe = pv_costs['solar']['total'] / (solar_annual_energy * solar_operational_years)
+    # Calculate capital recovery factor (CRF)
+    # CRF = r(1+r)^n / ((1+r)^n - 1)
+    # where r is the discount rate and n is the number of years
     
-    # For nuclear: total present value of costs / (annual energy * operational years)
-    # Nuclear construction time is specified in the costs dictionary
+    # For solar: operational period is YEARS - 1 (construction takes 1 year)
+    solar_operational_years = YEARS - 1
+    solar_crf = (discount_rate * (1 + discount_rate) ** solar_operational_years) / ((1 + discount_rate) ** solar_operational_years - 1)
+    
+    # For nuclear: operational period is YEARS - construction time
     nuclear_construction_years = nuclear_costs.get('nuclear_construction_time_years', 5)
     nuclear_operational_years = YEARS - nuclear_construction_years
-    nuclear_lcoe = pv_costs['nuclear']['total'] / (nuclear_annual_energy * nuclear_operational_years)
+    nuclear_crf = (discount_rate * (1 + discount_rate) ** nuclear_operational_years) / ((1 + discount_rate) ** nuclear_operational_years - 1)
+    
+    # Calculate LCOE using the capital recovery factor
+    # LCOE = (CRF * PV of costs) / Annual energy production
+    solar_lcoe = (solar_crf * pv_costs['solar']['total']) / solar_annual_energy
+    nuclear_lcoe = (nuclear_crf * pv_costs['nuclear']['total']) / nuclear_annual_energy
     
     return solar_lcoe, nuclear_lcoe
 
@@ -963,33 +976,175 @@ def create_sensitivity_analysis(solar_costs, nuclear_costs, power_output):
     
     return fig_lcoe, fig_cost
 
+def optimize_solar_battery(
+    solar_data,
+    target_power_mw,
+    target_reliability,
+    solar_module_cost,
+    battery_cost,
+    land_cost,
+    round_trip_efficiency_pct,
+    progress_bar
+):
+    """Optimize solar and battery capacity to meet target reliability at minimum cost."""
+    
+    # Calculate a reference cost for scaling
+    reference_cost = (
+        target_power_mw * 1000 * solar_module_cost +  # Solar cost
+        target_power_mw * 24 * 1000 * battery_cost +  # 24h battery cost
+        target_power_mw * 5 * land_cost  # Land cost
+    )
+    
+    def objective_function(x):
+        """Calculate total cost for given solar and battery capacity."""
+        solar_capacity = x[0]
+        battery_capacity = x[1]
+        
+        # Calculate costs
+        solar_panel_cost = solar_capacity * 1000 * solar_module_cost  # Convert MW to kW
+        battery_cost_total = battery_capacity * 1000 * battery_cost  # Convert MWh to kWh
+        land_cost_total = solar_capacity * 5 * land_cost  # 5 acres per MW
+        
+        # Scale the total cost to be in a similar range as reliability (0-1)
+        total_cost = solar_panel_cost + battery_cost_total + land_cost_total
+        scaled_cost = total_cost / reference_cost
+        
+        return scaled_cost
+    
+    def reliability_constraint(x):
+        """Calculate reliability for given solar and battery capacity."""
+        solar_capacity = x[0]
+        battery_capacity = x[1]
+        
+        print(f"\nTrying configuration:")
+        print(f"solar_capacity: {solar_capacity:,.0f} MW")
+        print(f"battery_capacity: {battery_capacity:,.0f} MWh")
+        
+        # Run battery simulation
+        battery_soc, power_output, _, _ = simulate_battery_storage(
+            solar_data,
+            solar_capacity,
+            battery_capacity,
+            target_power_mw,
+            round_trip_efficiency_pct
+        )
+        
+        # Calculate reliability
+        reliability = calculate_reliability(power_output, target_power_mw)
+        
+        # Update progress bar
+        progress_bar.progress(min(1.0, reliability / target_reliability))
+        
+        print(f"reliability: {reliability:.3f}, target: {target_reliability:.3f}")
+        print(f"constraint value: {reliability - target_reliability:.3f}")
+        
+        # Return reliability - target_reliability (must be >= 0 for constraint satisfaction)
+        return reliability - target_reliability
+    
+    # Initial guess (start with more aggressive values)
+    x0 = [target_power_mw * 8, target_power_mw * 32]  # Increased initial values
+    
+    # Bounds for solar and battery capacity (more generous bounds)
+    bounds = [
+        (target_power_mw * 4, target_power_mw * 15),  # Solar bounds
+        (target_power_mw * 8, target_power_mw * 72)   # Battery bounds
+    ]
+    
+    # Constraints
+    constraints = [
+        {
+            'type': 'ineq',
+            'fun': reliability_constraint,
+            'name': 'reliability'
+        }
+    ]
+    
+    print("\nStarting optimization with:")
+    print(f"Initial guess: {x0}")
+    print(f"Bounds: {bounds}")
+    print(f"Target reliability: {target_reliability}")
+    
+    # Run optimization with more iterations and better tolerance
+    result = minimize(
+        objective_function,
+        x0,
+        method='SLSQP',
+        bounds=bounds,
+        constraints=constraints,
+        options={
+            'maxiter': MAX_ITERATIONS,
+            'ftol': 1e-9,     # convergence criterion
+            'eps': 1e-3,      # Step size for numerical derivatives
+            'disp': True,     # Show optimization progress
+            'iprint': 2       # Print optimization progress
+        }
+    )
+    
+    print("\nOptimization result:")
+    print(f"Success: {result.success}")
+    print(f"Message: {result.message}")
+    print(f"Final configuration: {result.x}")
+    
+    if not result.success:
+        st.warning("Optimization did not converge. Try adjusting the target reliability.")
+        return None
+    
+    # Get optimal values
+    optimal_solar = result.x[0]
+    optimal_battery = result.x[1]
+    
+    # Round to nearest step
+    optimal_solar = round(optimal_solar / SOLAR_CAPACITY_STEP) * SOLAR_CAPACITY_STEP
+    optimal_battery = round(optimal_battery / BATTERY_CAPACITY_STEP) * BATTERY_CAPACITY_STEP
+    
+    # Calculate final reliability with rounded values
+    battery_soc, power_output, _, _ = simulate_battery_storage(
+        solar_data,
+        optimal_solar,
+        optimal_battery,
+        target_power_mw,
+        round_trip_efficiency_pct
+    )
+    final_reliability = calculate_reliability(power_output, target_power_mw)
+    
+    print(f"\nFinal configuration after rounding:")
+    print(f"Solar capacity: {optimal_solar:,.0f} MW")
+    print(f"Battery capacity: {optimal_battery:,.0f} MWh")
+    print(f"Final reliability: {final_reliability:.3f}")
+    
+    # Calculate actual cost (not scaled)
+    actual_cost = (
+        optimal_solar * 1000 * solar_module_cost +
+        optimal_battery * 1000 * battery_cost +
+        optimal_solar * 5 * land_cost
+    )
+    
+    return {
+        'solar_capacity': optimal_solar,
+        'battery_capacity': optimal_battery,
+        'reliability': final_reliability,
+        'total_cost': actual_cost
+    }
+
 def main():
-    st.title("⚡ Compare the costs of powering a large load with solar and nuclear")
-    st.markdown("""
-Imagine that you want to build a new data center or factory or whatever. 
-You need something like 600 MW (configurable) of power to run your new facility, with high reliability.
-And you would like it to be low carbon. 
-For this sake of this simplified use case:
-1. to build a new solar+storage plant that will provide power most of the time, or
-2. you can build a nuclear plant that will run continuously aside from refueling outages and other maintenance. 
-Which plant will be most cost effective?
-Are the construction times acceptable?
-Is the reliability pattern acceptable?
-Play around with this app to find out. 
-                
-There are lots of simplifying assumptions in this model. See the source code for details. 
-But perhaps most importantly I'm evaluating costs over a 40 year period, 
-but only considering the energy produced for the period of operation within that period. 
-                
-- Author: Paul Hines
-- LinkedIn: https://www.linkedin.com/in/paul-hines-energy/
-- Caveat: This is a personal project, and has nothing to do with my employer(s)
-- Source code: https://github.com/phines/compare-power-plants
-    """)
+    # Display the image
+    st.image("images/nuc-vs-solar.png", use_container_width=True)
+    # Title
+    st.title("Should I power my data center with solar and batteries or nuclear?")
+    # Read and display the introduction
+    with open('intro.md', 'r') as f:
+        intro_text = f.read()
+    st.markdown(intro_text)
     
     # Initialize session state for metric type if it doesn't exist
     if 'metric_type' not in st.session_state:
         st.session_state.metric_type = "Present value cost"
+    
+    # Initialize session state for system size if it doesn't exist
+    if 'solar_capacity' not in st.session_state:
+        st.session_state.solar_capacity = DEFAULT_PARAMETERS['solar_capacity_mw']['value']
+    if 'battery_capacity' not in st.session_state:
+        st.session_state.battery_capacity = DEFAULT_PARAMETERS['battery_capacity_mwh']['value']
     
     # Sidebar for common parameters
     st.sidebar.header("Common parameters")
@@ -1060,6 +1215,81 @@ but only considering the energy produced for the period of operation within that
         )
         st.markdown(f"**Selected site capacity factor:** {selected_capacity_factor:.1%}")
         
+        # Add optimization section
+        st.subheader("Optimize system size")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            target_reliability = st.slider(
+                "Target reliability (%)",
+                min_value=80.0,
+                max_value=99.9,
+                value=95.0,
+                step=0.1,
+                help="Target reliability for the solar + battery system"
+            )
+            
+            if st.button("Optimize system size", help="Find the minimum cost combination of solar and battery capacity that meets the target reliability"):
+                # Create progress bar
+                progress_bar = st.progress(0.0)
+                
+                # Run optimization
+                optimization_result = optimize_solar_battery(
+                    solar_data_dict[selected_site_data['file']],
+                    target_power_mw,
+                    target_reliability / 100,  # Convert to decimal
+                    DEFAULT_PARAMETERS['solar_module_cost']['value'],
+                    DEFAULT_PARAMETERS['battery_cost']['value'],
+                    DEFAULT_PARAMETERS['land_cost']['value'],
+                    DEFAULT_PARAMETERS['round_trip_efficiency_pct']['value'],
+                    progress_bar
+                )
+                
+                if optimization_result:
+                    # Update session state with optimal values
+                    st.session_state.solar_capacity = optimization_result['solar_capacity']
+                    st.session_state.battery_capacity = optimization_result['battery_capacity']
+                    
+                    # Show results
+                    st.success(f"""
+                    Optimization complete! Optimal configuration:
+                    - Solar capacity: {optimization_result['solar_capacity']:,.0f} MW
+                    - Battery capacity: {optimization_result['battery_capacity']:,.0f} MWh
+                    - Achieved reliability: {optimization_result['reliability']:.1%}
+                    - Total upfront cost: ${optimization_result['total_cost']:,.0f}
+                    """)
+                    
+                    # Store optimization results for comparison
+                    if 'optimization_history' not in st.session_state:
+                        st.session_state.optimization_history = []
+                    
+                    st.session_state.optimization_history.append({
+                        'target_reliability': target_reliability,
+                        'solar_capacity': optimization_result['solar_capacity'],
+                        'battery_capacity': optimization_result['battery_capacity'],
+                        'achieved_reliability': optimization_result['reliability'],
+                        'total_cost': optimization_result['total_cost']
+                    })
+                    
+                    # Force a rerun to update the sliders
+                    st.rerun()
+        
+        with col2:
+            # Display optimization history
+            if 'optimization_history' in st.session_state and st.session_state.optimization_history:
+                st.subheader("Optimization history")
+                history_df = pd.DataFrame(st.session_state.optimization_history)
+                history_df['target_reliability'] = history_df['target_reliability'].map('{:.1f}%'.format)
+                history_df['achieved_reliability'] = history_df['achieved_reliability'].map('{:.1f}%'.format)
+                history_df['total_cost'] = history_df['total_cost'].map('${:,.0f}'.format)
+                history_df['solar_capacity'] = history_df['solar_capacity'].map('{:.0f} MW'.format)
+                history_df['battery_capacity'] = history_df['battery_capacity'].map('{:.0f} MWh'.format)
+                st.dataframe(history_df, use_container_width=True)
+                
+                if st.button("Clear history"):
+                    st.session_state.optimization_history = []
+                    st.rerun()
+        
         # Solar system parameters
         col1, col2 = st.columns(2)
         
@@ -1069,9 +1299,10 @@ but only considering the energy produced for the period of operation within that
                 "Solar plant DC capacity (MW)",
                 min_value=DEFAULT_PARAMETERS['solar_capacity_mw']['min'],
                 max_value=DEFAULT_PARAMETERS['solar_capacity_mw']['max'],
-                value=DEFAULT_PARAMETERS['solar_capacity_mw']['value'],
+                value=st.session_state.solar_capacity,
                 step=DEFAULT_PARAMETERS['solar_capacity_mw']['step'],
-                help=DEFAULT_PARAMETERS['solar_capacity_mw']['citation']
+                help=DEFAULT_PARAMETERS['solar_capacity_mw']['citation'],
+                key='solar_capacity_slider'
             )
             
             solar_construction_time = st.slider(
@@ -1097,9 +1328,10 @@ but only considering the energy produced for the period of operation within that
                 "Battery storage capacity (MWh)",
                 min_value=DEFAULT_PARAMETERS['battery_capacity_mwh']['min'],
                 max_value=DEFAULT_PARAMETERS['battery_capacity_mwh']['max'],
-                value=DEFAULT_PARAMETERS['battery_capacity_mwh']['value'],
+                value=st.session_state.battery_capacity,
                 step=DEFAULT_PARAMETERS['battery_capacity_mwh']['step'],
-                help=DEFAULT_PARAMETERS['battery_capacity_mwh']['citation']
+                help=DEFAULT_PARAMETERS['battery_capacity_mwh']['citation'],
+                key='battery_capacity_slider'
             )
             
             round_trip_efficiency_pct = st.slider(
