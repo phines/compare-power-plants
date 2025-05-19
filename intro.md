@@ -22,7 +22,7 @@ Here are a few of the more important ones:
 ## Credits and Disclaimers
 
 - Author: [Paul Hines](https://www.linkedin.com/in/paul-hines-energy/)
-- Original [LinkedIn post](https://www.linkedin.com/posts/paul-hines-energy_compare-the-costs-of-powering-a-large-load-with-solar-activity-7110000000000000000/)
+- Original [LinkedIn post](https://www.linkedin.com/posts/paul-hines-energy_solar-vs-nuclear-power-cost-comparison-activity-7330225844751069184-Tp_4)
 - Source code: [github.com/phines/compare-power-plants](https://github.com/phines/compare-power-plants)
 - Caveat: I used AI (mostly Cursor with its default engine) extensively for this project. We (the model and I) fixed many of the errors that the model originally made, but I wouldn't be surprised if some remain. This is a personal project; do not blame my employer(s) for any errors or shortcomings. 
 
