@@ -1618,6 +1618,9 @@ def main():
             hide_index=True  # Hide the index column
         )
         
+        # Add title above the metric selector
+        st.subheader("Cost components and sensitivity analysis")
+        
         # Add metric selector
         metric_type = st.selectbox(
             "Select cost metric",
@@ -1631,11 +1634,9 @@ def main():
         
         with col1:
             if metric_type == "Present value cost":
-                st.subheader("Cost component comparison")
                 fig = create_cost_comparison_chart(solar_costs, nuclear_costs, discount_rate_pct)
                 st.plotly_chart(fig, use_container_width=True)
             else:  # LCOE
-                st.subheader("LCOE component comparison")
                 # Create LCOE comparison chart
                 fig = go.Figure()
                 
@@ -1692,7 +1693,6 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
                         
         with col2:
-            st.subheader("Sensitivity analysis")
             fig_lcoe, fig_cost = create_sensitivity_analysis(solar_costs, nuclear_costs, power_output)
             if metric_type == "Present value cost":
                 st.plotly_chart(fig_cost, use_container_width=True)
