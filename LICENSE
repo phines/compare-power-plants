@@ -19,3 +19,5 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Note that this project includes data provided by NREL, obtained from this website: https://www2.nrel.gov/grid/solar-power-data. As stated "The data are intended for use by energy professionals—such as transmission planners, utility planners, project developers, and university researchers—who perform solar integration studies and need to estimate power production from hypothetical solar plants." and "The data are for specific years and should not be assumed to be representative of typical radiation levels for a site. These data should not generally be used for site-specific project development work."

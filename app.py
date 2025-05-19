@@ -15,6 +15,33 @@ st.set_page_config(
     layout="wide"
 )
 
+# Add custom CSS for tabs
+st.markdown("""
+    <style>
+        .stTabs {
+            margin-top: 32px;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 24px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
+            background-color: #f0f2f6;
+            border-radius: 4px 4px 0 0;
+            gap: 1px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            padding-left: 24px;
+            padding-right: 24px;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #ffffff;
+            border-bottom: 2px solid #ff4b4b;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
 # Constants
 FACILITY_SIZE_MW = 600
 YEARS = 40
@@ -24,6 +51,15 @@ HOURS_PER_YEAR = 8760
 SOLAR_CAPACITY_STEP = 100  # MW
 BATTERY_CAPACITY_STEP = 100  # MWh
 MAX_ITERATIONS = 100000  # Not sure how many needed.
+
+# Location mapping for solar sites
+LOCATION_NAMES = {
+    (35.85, -115.15): "Las Vegas",
+    (36.85, -116.15): "Beatty",
+    (37.85, -117.15): "Tonopah",
+    (38.85, -118.15): "Hawthorne",
+    (39.85, -119.15): "Reno"
+}
 
 # Default parameters with detailed citations
 DEFAULT_PARAMETERS = {
@@ -86,12 +122,12 @@ DEFAULT_PARAMETERS = {
         'citation': "Lazard Levelized Cost of Storage 2023, Lithium-ion battery round-trip efficiency",
         'url': "https://www.lazard.com/research-insights/levelized-cost-of-storage-version-9-0/"
     },
-    'solar_module_cost': {
+    'solar_and_inverter_cost': {
         'value': 1000.0,
         'min': 500.0,
         'max': 2000.0,
         'step': 50.0,
-        'citation': "Lazard Levelized Cost of Energy 2023, Utility-scale solar PV capital cost",
+        'citation': "Lazard Levelized Cost of Energy 2023, Utility-scale solar PV capital cost including power conversion system",
         'url': "https://www.lazard.com/research-insights/levelized-cost-of-energy-version-17-0/"
     },
     'battery_cost': {
@@ -106,15 +142,15 @@ DEFAULT_PARAMETERS = {
         'value': 10000.0,
         'min': 1000.0,
         'max': 20000.0,
-        'step': 1000.0,
+        'step': 500.0,
         'citation': "USDA Land Values 2023, Nevada agricultural land value",
         'url': "https://www.nass.usda.gov/Publications/Todays_Reports/reports/land0823.pdf"
     },
     'solar_maintenance_cost': {
-        'value': 12.5,
-        'min': 10.0,
+        'value': 12.0,
+        'min': 5.0,
         'max': 100.0,
-        'step': 5.0,
+        'step': 1.0,
         'citation': "Lazard Levelized Cost of Energy 2023, Utility-scale solar PV O&M cost",
         'url': "https://www.lazard.com/research-insights/levelized-cost-of-energy-version-17-0/"
     },
@@ -205,6 +241,20 @@ def load_solar_data(file_path):
     df['LocalTime'] = pd.to_datetime(df['LocalTime'], format='%m/%d/%y %H:%M')
     return df
 
+def get_location_name(lat, lon):
+    """Get a human-readable location name for given coordinates."""
+    # Find the closest predefined location
+    min_dist = float('inf')
+    closest_name = None
+    
+    for (ref_lat, ref_lon), name in LOCATION_NAMES.items():
+        dist = ((lat - ref_lat) ** 2 + (lon - ref_lon) ** 2) ** 0.5
+        if dist < min_dist:
+            min_dist = dist
+            closest_name = name
+    
+    return closest_name or f"Site near {lat:.2f}°N, {lon:.2f}°W"
+
 def get_solar_sites():
     """Get list of available solar sites from data directory."""
     data_dir = "data"
@@ -222,11 +272,13 @@ def get_solar_sites():
                     capacity_part = next((p for p in parts if 'MW' in p), None)
                     if capacity_part:
                         capacity = float(capacity_part.replace('MW', ''))
+                        location_name = get_location_name(lat, lon)
                         sites.append({
                             'file': file,
                             'lat': lat,
                             'lon': lon,
-                            'capacity': capacity
+                            'capacity': capacity,
+                            'location_name': location_name
                         })
                 except (ValueError, IndexError):
                     continue  # Skip files that don't match the expected format
@@ -304,7 +356,7 @@ def calculate_reliability(power_output_mw, target_power_mw):
 def calculate_solar_costs(
     solar_capacity_mw,
     battery_capacity_mwh,
-    solar_module_cost_usd_per_kw=DEFAULT_PARAMETERS['solar_module_cost']['value'],
+    solar_module_cost_usd_per_kw=DEFAULT_PARAMETERS['solar_and_inverter_cost']['value'],
     battery_cost_usd_per_kwh=DEFAULT_PARAMETERS['battery_cost']['value'],
     land_cost_usd_per_acre=DEFAULT_PARAMETERS['land_cost']['value'],
     maintenance_cost_usd_per_kw_year=DEFAULT_PARAMETERS['solar_maintenance_cost']['value'],
@@ -350,7 +402,13 @@ def calculate_nuclear_costs(
     nuclear_construction_cost_usd = FACILITY_SIZE_MW * 1000 * nuclear_construction_cost_usd_per_kw  # Convert MW to kW
     
     # Annual costs
-    nuclear_annual_fuel_cost_usd = FACILITY_SIZE_MW * HOURS_PER_YEAR * nuclear_capacity_factor * nuclear_fuel_cost_usd_per_mwh
+    # Calculate annual energy production in MWh
+    annual_energy_mwh = FACILITY_SIZE_MW * HOURS_PER_YEAR * nuclear_capacity_factor
+    
+    # Calculate fuel cost based on energy production
+    nuclear_annual_fuel_cost_usd = annual_energy_mwh * nuclear_fuel_cost_usd_per_mwh
+    
+    # Calculate O&M cost based on capacity
     nuclear_annual_maintenance_usd = FACILITY_SIZE_MW * 1000 * nuclear_maintenance_cost_usd_per_kw_year  # Convert MW to kW
     
     # Decommissioning cost
@@ -524,17 +582,6 @@ def plot_weekly_data(solar_data, power_output, battery_soc, battery_charge, batt
         row=1, col=1
     )
     
-    # Add target power trace
-    fig.add_trace(
-        go.Scatter(
-            x=solar_data['LocalTime'].iloc[start_idx:end_idx],
-            y=[FACILITY_SIZE_MW] * (end_idx - start_idx),
-            name='Target power',
-            line=dict(color='red', dash='dash')
-        ),
-        row=1, col=1
-    )
-    
     # Add battery charge/discharge traces
     fig.add_trace(
         go.Scatter(
@@ -573,7 +620,7 @@ def plot_weekly_data(solar_data, power_output, battery_soc, battery_charge, batt
     
     # Update layout
     fig.update_layout(
-        title=f'Weekly power and battery data (Starting {week_start_date.strftime("%Y-%m-%d")})',
+        #title=f'Weekly power and battery data (Starting {week_start_date.strftime("%Y-%m-%d")})',
         height=800,  # Make the chart taller to accommodate subplots
         showlegend=True,
         legend=dict(
@@ -614,57 +661,49 @@ def create_comparison_table(solar_costs, nuclear_costs, solar_capacity_mw, batte
     solar_annual_energy = np.sum(power_output)  # MWh
     nuclear_annual_energy = FACILITY_SIZE_MW * HOURS_PER_YEAR * nuclear_costs['nuclear_capacity_factor']
     
-    # Create comparison data
-    comparison_data = {
-        'Metric': [
-            'Peak power capacity',
-            'Annual energy output',
-            'System reliability',
-            'Upfront cost',
-            'Annual O&M cost',
-            'Total present value cost',
-            'Levelized cost of energy (LCOE)',
-            'Land required',
-            'Construction time',
-            'Operational lifetime',
-            'Environmental impact',
-            'Decommissioning cost'
-        ],
-        'Solar PV + Storage': [
-            f"{solar_capacity_mw:,} MW",
-            f"{solar_annual_energy:,.0f} MWh",
-            f"{reliability:.1%}",
-            f"${solar_costs['total_initial_cost_usd']:,.0f}",
-            f"${solar_costs['annual_maintenance_usd']:,.0f}/year",
-            f"${solar_total:,.0f}",
-            f"${solar_lcoe:.2f}/MWh",
-            f"{solar_capacity_mw * 5:,.0f} acres",
-            f"{solar_construction_time:.1f} years",
-            f"{YEARS - solar_construction_time:.1f} years",
-            "Low (no emissions during operation)",
-            "Minimal (panels can be recycled)"
-        ],
-        'Nuclear': [
-            f"{FACILITY_SIZE_MW:,} MW",
-            f"{nuclear_annual_energy:,.0f} MWh",
-            f"{nuclear_costs['nuclear_capacity_factor']:.1%}",
-            f"${nuclear_costs['nuclear_construction_cost_usd']:,.0f}",
-            f"${nuclear_costs['nuclear_annual_fuel_cost_usd'] + nuclear_costs['nuclear_annual_maintenance_usd']:,.0f}/year",
-            f"${nuclear_total:,.0f}",
-            f"${nuclear_lcoe:.2f}/MWh",
-            "1,000 acres",
-            f"{nuclear_costs['nuclear_construction_time_years']:.1f} years",
-            f"{YEARS - nuclear_costs['nuclear_construction_time_years']:.1f} years",
-            "Low (no CO2 emissions during operation)",
-            f"${nuclear_costs['nuclear_decommissioning_cost_usd']:,.0f}"
-        ]
-    }
+    # Create list of metrics and their values
+    metrics = [
+        ('Peak power capacity', 
+         f"{solar_capacity_mw:,} MW",
+         f"{FACILITY_SIZE_MW:,} MW"),
+        ('Annual energy output',
+         f"{solar_annual_energy:,.0f} MWh",
+         f"{nuclear_annual_energy:,.0f} MWh"),
+        ('System reliability',
+         f"{reliability:.1%}",
+         f"{nuclear_costs['nuclear_capacity_factor']:.1%}"),
+        ('Upfront cost',
+         f"${solar_costs['total_initial_cost_usd']:,.0f}",
+         f"${nuclear_costs['nuclear_construction_cost_usd']:,.0f}"),
+        ('Annual O&M cost',
+         f"${solar_costs['annual_maintenance_usd']:,.0f}/year",
+         f"${nuclear_costs['nuclear_annual_fuel_cost_usd'] + nuclear_costs['nuclear_annual_maintenance_usd']:,.0f}/year"),
+        ('Total present value cost',
+         f"${solar_total:,.0f}",
+         f"${nuclear_total:,.0f}"),
+        ('Levelized cost of energy (LCOE)',
+         f"${solar_lcoe:.2f}/MWh",
+         f"${nuclear_lcoe:.2f}/MWh"),
+        ('Land required',
+         f"{solar_capacity_mw * 5:,.0f} acres",
+         "1,000 acres"),
+        ('Construction time',
+         f"{solar_construction_time:.1f} years",
+         f"{nuclear_costs['nuclear_construction_time_years']:.1f} years"),
+        ('Operational lifetime',
+         f"{YEARS - solar_construction_time:.1f} years",
+         f"{YEARS - nuclear_costs['nuclear_construction_time_years']:.1f} years"),
+        ('Environmental impact',
+         "Low (no emissions during operation)",
+         "Low (no CO2 emissions during operation)"),
+        ('Decommissioning cost',
+         "Minimal (panels can be recycled)",
+         f"${nuclear_costs['nuclear_decommissioning_cost_usd']:,.0f}")
+    ]
     
-    # Create DataFrame and remove any empty rows
-    df = pd.DataFrame(comparison_data)
-    df = df.dropna(how='all')  # Remove rows where all values are NaN
-    df = df.dropna(how='any')  # Remove rows where any value is NaN
-    df = df.reset_index(drop=True)  # Reset index after dropping rows
+    # Create DataFrame directly from the list of tuples
+    df = pd.DataFrame(metrics, columns=['Metric', 'Solar PV + Storage', 'Nuclear'])
+    
     return df
 
 def calculate_capacity_factor(solar_data, solar_capacity_mw):
@@ -738,7 +777,7 @@ def create_solar_sites_map(sites, solar_data_dict):
                 size=15,
                 color=color
             ),
-            text=[f"{site['file'].split('_')[1]}, {site['file'].split('_')[2]}<br>CF: {capacity_factor:.1f}%"],
+            text=[f"{site['location_name']}<br>CF: {capacity_factor:.1f}%"],
             textposition='top center',
             showlegend=False  # Hide the legend
         ))
@@ -832,40 +871,39 @@ def calculate_present_value_costs(solar_costs, nuclear_costs, discount_rate_pct,
         }
     }
 
-def calculate_lcoe_components(pv_costs, solar_annual_energy, nuclear_annual_energy, discount_rate_pct, nuclear_construction_years=5):
+def calculate_lcoe_components(pv_costs, solar_costs, nuclear_costs, solar_annual_energy, nuclear_annual_energy, discount_rate_pct, nuclear_construction_years=5, solar_construction_years=2):
     """Calculate LCOE components for both systems."""
     discount_rate = discount_rate_pct / 100
     
-    # Calculate the denominator for both systems (total energy over operational lifetime)
-    solar_operational_years = YEARS - 1  # Solar construction takes 1 year
-    nuclear_operational_years = YEARS - nuclear_construction_years
-    
-    solar_denominator = solar_annual_energy * solar_operational_years
-    nuclear_denominator = nuclear_annual_energy * nuclear_operational_years
+    # Calculate capital recovery factors using total project years
+    solar_crf = (discount_rate * (1 + discount_rate) ** YEARS) / ((1 + discount_rate) ** YEARS - 1)
+    nuclear_crf = (discount_rate * (1 + discount_rate) ** YEARS) / ((1 + discount_rate) ** YEARS - 1)
     
     # Solar components
     solar_components = {
-        'Solar upfront': pv_costs['solar']['initial'] / solar_denominator,
-        'Battery upfront': 0,  # This is part of initial cost
-        'Solar land': 0,  # This is part of initial cost
-        'Solar O&M': pv_costs['solar']['annual'] / solar_denominator,
-        'Solar replacement': pv_costs['solar']['replacement'] / solar_denominator
+        'Solar upfront': (solar_crf * solar_costs['solar_upfront_cost_usd']) / solar_annual_energy,
+        'Battery upfront': (solar_crf * solar_costs['battery_cost_usd']) / solar_annual_energy,
+        'Solar land': (solar_crf * solar_costs['land_cost_usd']) / solar_annual_energy,
+        'Solar O&M': solar_costs['annual_maintenance_usd'] / solar_annual_energy,
+        'Solar replacement': (solar_crf * solar_costs['total_initial_cost_usd'] * 0.7 / (1 + discount_rate) ** 20) / solar_annual_energy
     }
     
     # Nuclear components
     nuclear_components = {
-        'Nuclear upfront': pv_costs['nuclear']['initial'] / nuclear_denominator,
-        'Nuclear fuel': 0,  # Fuel is part of annual costs
-        'Nuclear O&M': pv_costs['nuclear']['annual'] / nuclear_denominator,
-        'Decommissioning (Nuc)': pv_costs['nuclear']['decommissioning'] / nuclear_denominator
+        'Nuclear upfront': (nuclear_crf * nuclear_costs['nuclear_construction_cost_usd']) / nuclear_annual_energy,
+        'Nuclear fuel': nuclear_costs['nuclear_annual_fuel_cost_usd'] / nuclear_annual_energy,
+        'Nuclear O&M': nuclear_costs['nuclear_annual_maintenance_usd'] / nuclear_annual_energy,
+        'Decommissioning (Nuc)': (nuclear_crf * nuclear_costs['nuclear_decommissioning_cost_usd']) / nuclear_annual_energy
     }
     
-    return solar_components, nuclear_components
+    # Calculate total LCOE from components
+    solar_lcoe = sum(solar_components.values())
+    nuclear_lcoe = sum(nuclear_components.values())
+    
+    return solar_components, nuclear_components, solar_lcoe, nuclear_lcoe
 
 def calculate_lcoe(solar_costs, nuclear_costs, power_output, discount_rate_pct=7.0, solar_replacement_cost_factor=0.7):
     """Calculate Levelized Cost of Energy (LCOE) for both systems."""
-    discount_rate = discount_rate_pct / 100
-    
     # Calculate total energy production (MWh)
     solar_annual_energy = np.sum(power_output)  # This is already in MWh
     nuclear_annual_energy = FACILITY_SIZE_MW * HOURS_PER_YEAR * nuclear_costs['nuclear_capacity_factor']
@@ -878,23 +916,17 @@ def calculate_lcoe(solar_costs, nuclear_costs, power_output, discount_rate_pct=7
         solar_replacement_cost_factor
     )
     
-    # Calculate capital recovery factor (CRF)
-    # CRF = r(1+r)^n / ((1+r)^n - 1)
-    # where r is the discount rate and n is the number of years
-    
-    # For solar: operational period is YEARS - 1 (construction takes 1 year)
-    solar_operational_years = YEARS - 1
-    solar_crf = (discount_rate * (1 + discount_rate) ** solar_operational_years) / ((1 + discount_rate) ** solar_operational_years - 1)
-    
-    # For nuclear: operational period is YEARS - construction time
-    nuclear_construction_years = nuclear_costs.get('nuclear_construction_time_years', 5)
-    nuclear_operational_years = YEARS - nuclear_construction_years
-    nuclear_crf = (discount_rate * (1 + discount_rate) ** nuclear_operational_years) / ((1 + discount_rate) ** nuclear_operational_years - 1)
-    
-    # Calculate LCOE using the capital recovery factor
-    # LCOE = (CRF * PV of costs) / Annual energy production
-    solar_lcoe = (solar_crf * pv_costs['solar']['total']) / solar_annual_energy
-    nuclear_lcoe = (nuclear_crf * pv_costs['nuclear']['total']) / nuclear_annual_energy
+    # Calculate LCOE components and totals
+    solar_components, nuclear_components, solar_lcoe, nuclear_lcoe = calculate_lcoe_components(
+        pv_costs,
+        solar_costs,
+        nuclear_costs,
+        solar_annual_energy,
+        nuclear_annual_energy,
+        discount_rate_pct,
+        nuclear_costs.get('nuclear_construction_time_years', 5),
+        solar_costs.get('solar_construction_time', 2)
+    )
     
     return solar_lcoe, nuclear_lcoe
 
@@ -1131,10 +1163,6 @@ def main():
     st.image("images/nuc-vs-solar.png", use_container_width=True)
     # Title
     st.title("Should I power my data center with solar and batteries or nuclear?")
-    # Read and display the introduction
-    with open('intro.md', 'r') as f:
-        intro_text = f.read()
-    st.markdown(intro_text)
     
     # Initialize session state for metric type if it doesn't exist
     if 'metric_type' not in st.session_state:
@@ -1160,7 +1188,7 @@ def main():
     )
     
     target_power_mw = st.sidebar.slider(
-        "Facility power needs (MW)",
+        "Facility power rquirement (MW)",
         min_value=DEFAULT_PARAMETERS['target_power_mw']['min'],
         max_value=DEFAULT_PARAMETERS['target_power_mw']['max'],
         value=DEFAULT_PARAMETERS['target_power_mw']['value'],
@@ -1173,7 +1201,7 @@ def main():
         st.rerun()
     
     # Create tabs
-    tab1, tab2, tab3 = st.tabs(["Solar + battery system", "Nuclear system", "Results & analysis"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Introduction", "Solar + battery system", "Nuclear system", "Results & analysis"])
     
     # Load all solar data first
     sites = get_solar_sites()
@@ -1196,27 +1224,132 @@ def main():
     best_site = site_capacity_factors[0][0]
     
     with tab1:
+        # Read and display the introduction
+        with open('intro.md', 'r') as f:
+            intro_text = f.read()
+        st.markdown(intro_text)
+    
+    with tab2:
         st.header("Solar + battery system configuration")
         
         # Solar site selection
-        st.subheader("Solar site selection")
-        map_fig = create_solar_sites_map(sites, solar_data_dict)
-        st.plotly_chart(map_fig, use_container_width=True)
-        
+        st.subheader("Select a solar site.")
         # Create site options sorted by capacity factor (highest first)
-        site_options = [f"{site['file']} (Lat: {site['lat']}, Lon: {site['lon']})" for site, _ in site_capacity_factors]
-        selected_site = st.selectbox("Select solar site", site_options, index=0)  # Default to first (highest CF) site
-        selected_site_data = next(site for site, _ in site_capacity_factors if f"{site['file']} (Lat: {site['lat']}, Lon: {site['lon']})" == selected_site)
-        
+        site_options = [f"{site['location_name']} (CF: {calculate_capacity_factor(solar_data_dict[site['file']], site['capacity']):.1%})" 
+                       for site, _ in site_capacity_factors]
+        selected_site = st.selectbox("Select solar site. See the map below for locations.", site_options, index=0)  # Default to first (highest CF) site
+        selected_site_data = next(site for site, _ in site_capacity_factors 
+                                if f"{site['location_name']} (CF: {calculate_capacity_factor(solar_data_dict[site['file']], site['capacity']):.1%})" == selected_site)
+
         # Display capacity factor for selected site
         selected_capacity_factor = calculate_capacity_factor(
             solar_data_dict[selected_site_data['file']], 
             selected_site_data['capacity']
         )
         st.markdown(f"**Selected site capacity factor:** {selected_capacity_factor:.1%}")
+
+        # add the map
+        map_fig = create_solar_sites_map(sites, solar_data_dict)
+        st.plotly_chart(map_fig, use_container_width=True)
+        
+        # Solar system parameters
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("System size")
+            solar_capacity_mw = st.slider(
+                "Solar plant DC capacity (MW)",
+                min_value=DEFAULT_PARAMETERS['solar_capacity_mw']['min'],
+                max_value=DEFAULT_PARAMETERS['solar_capacity_mw']['max'],
+                value=st.session_state.solar_capacity,
+                step=DEFAULT_PARAMETERS['solar_capacity_mw']['step'],
+                help=DEFAULT_PARAMETERS['solar_capacity_mw']['citation'],
+                key='solar_capacity_slider'
+            )
+            
+            battery_capacity_mwh = st.slider(
+                "Battery storage capacity (MWh)",
+                min_value=DEFAULT_PARAMETERS['battery_capacity_mwh']['min'],
+                max_value=DEFAULT_PARAMETERS['battery_capacity_mwh']['max'],
+                value=st.session_state.battery_capacity,
+                step=DEFAULT_PARAMETERS['battery_capacity_mwh']['step'],
+                help=DEFAULT_PARAMETERS['battery_capacity_mwh']['citation'],
+                key='battery_capacity_slider'
+            )
+            
+            solar_construction_time = st.slider(
+                "Solar plant construction time (years)",
+                min_value=DEFAULT_PARAMETERS['solar_construction_time']['min'],
+                max_value=DEFAULT_PARAMETERS['solar_construction_time']['max'],
+                value=DEFAULT_PARAMETERS['solar_construction_time']['value'],
+                step=DEFAULT_PARAMETERS['solar_construction_time']['step'],
+                help=DEFAULT_PARAMETERS['solar_construction_time']['citation']
+            )
+            
+            solar_replacement_cost_factor = st.slider(
+                "Solar replacement cost factor",
+                min_value=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['min'],
+                max_value=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['max'],
+                value=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['value'],
+                step=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['step'],
+                help="Fraction of initial cost required for solar panel replacement (typically 70% due to reduced installation costs)",
+                format="%.2f"
+            )
+            
+            round_trip_efficiency_pct = st.slider(
+                "Battery round-trip efficiency (%)",
+                min_value=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['min'],
+                max_value=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['max'],
+                value=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['value'],
+                step=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['step'],
+                help=f"{TOOLTIPS['battery_efficiency']} {DEFAULT_PARAMETERS['round_trip_efficiency_pct']['citation']}"
+            )
+        
+        with col2:
+            st.subheader("Cost parameters")
+            solar_module_cost = st.number_input(
+                "Solar and inverter cost ($/kW)",
+                min_value=DEFAULT_PARAMETERS['solar_and_inverter_cost']['min'],
+                max_value=DEFAULT_PARAMETERS['solar_and_inverter_cost']['max'],
+                value=DEFAULT_PARAMETERS['solar_and_inverter_cost']['value'],
+                step=DEFAULT_PARAMETERS['solar_and_inverter_cost']['step'],
+                help="Cost per kilowatt of solar panel capacity and power conversion system, including installation. Source: Lazard Levelized Cost of Energy 2023.",
+                format="%.0f"
+            )
+            
+            battery_cost = st.number_input(
+                "Battery cost ($/kWh)",
+                min_value=DEFAULT_PARAMETERS['battery_cost']['min'],
+                max_value=DEFAULT_PARAMETERS['battery_cost']['max'],
+                value=DEFAULT_PARAMETERS['battery_cost']['value'],
+                step=DEFAULT_PARAMETERS['battery_cost']['step'],
+                help=f"{TOOLTIPS['battery_cost']} {DEFAULT_PARAMETERS['battery_cost']['citation']}",
+                format="%.0f"
+            )
+            
+            land_cost = st.number_input(
+                "Land cost ($/acre)",
+                min_value=DEFAULT_PARAMETERS['land_cost']['min'],
+                max_value=DEFAULT_PARAMETERS['land_cost']['max'],
+                value=DEFAULT_PARAMETERS['land_cost']['value'],
+                step=DEFAULT_PARAMETERS['land_cost']['step'],
+                help=DEFAULT_PARAMETERS['land_cost']['citation'],
+                format="%.0f"
+            )
+            
+            solar_maintenance_cost = st.number_input(
+                "Annual maintenance cost ($/kW-year)",
+                min_value=DEFAULT_PARAMETERS['solar_maintenance_cost']['min'],
+                max_value=DEFAULT_PARAMETERS['solar_maintenance_cost']['max'],
+                value=DEFAULT_PARAMETERS['solar_maintenance_cost']['value'],
+                step=DEFAULT_PARAMETERS['solar_maintenance_cost']['step'],
+                help=f"{DEFAULT_PARAMETERS['solar_maintenance_cost']['citation']}",
+                format="%.2f"
+            )
         
         # Add optimization section
         st.subheader("Optimize system size")
+        st.markdown("Use the controls below to choose the optimal combination of battery and solar capacity to meet a chosen reliability level.")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -1229,7 +1362,7 @@ def main():
                 help="Target reliability for the solar + battery system"
             )
             
-            if st.button("Optimize system size", help="Find the minimum cost combination of solar and battery capacity that meets the target reliability"):
+            if st.button("Optimize", help="Find the minimum cost combination of solar and battery capacity that meets the target reliability"):
                 # Create progress bar
                 progress_bar = st.progress(0.0)
                 
@@ -1238,7 +1371,7 @@ def main():
                     solar_data_dict[selected_site_data['file']],
                     target_power_mw,
                     target_reliability / 100,  # Convert to decimal
-                    DEFAULT_PARAMETERS['solar_module_cost']['value'],
+                    DEFAULT_PARAMETERS['solar_and_inverter_cost']['value'],
                     DEFAULT_PARAMETERS['battery_cost']['value'],
                     DEFAULT_PARAMETERS['land_cost']['value'],
                     DEFAULT_PARAMETERS['round_trip_efficiency_pct']['value'],
@@ -1279,107 +1412,39 @@ def main():
             if 'optimization_history' in st.session_state and st.session_state.optimization_history:
                 st.subheader("Optimization history")
                 history_df = pd.DataFrame(st.session_state.optimization_history)
-                history_df['target_reliability'] = history_df['target_reliability'].map('{:.1f}%'.format)
-                history_df['achieved_reliability'] = history_df['achieved_reliability'].map('{:.1f}%'.format)
-                history_df['total_cost'] = history_df['total_cost'].map('${:,.0f}'.format)
-                history_df['solar_capacity'] = history_df['solar_capacity'].map('{:.0f} MW'.format)
-                history_df['battery_capacity'] = history_df['battery_capacity'].map('{:.0f} MWh'.format)
+                
+                # Rename columns to be more user-friendly
+                column_renames = {
+                    'target_reliability': 'Target Reliability',
+                    'solar_capacity': 'Solar Capacity',
+                    'battery_capacity': 'Battery Capacity',
+                    'achieved_reliability': 'Achieved Reliability',
+                    'total_cost': 'Total Cost'
+                }
+                history_df = history_df.rename(columns=column_renames)
+                
+                # Format the values
+                history_df['Target Reliability'] = history_df['Target Reliability'].map('{:.1f}%'.format)
+                history_df['Achieved Reliability'] = (history_df['Achieved Reliability'] * 100).map('{:.1f}%'.format)
+                history_df['Total Cost'] = history_df['Total Cost'].map('${:,.0f}'.format)
+                history_df['Solar Capacity'] = history_df['Solar Capacity'].map('{:.0f} MW'.format)
+                history_df['Battery Capacity'] = history_df['Battery Capacity'].map('{:.0f} MWh'.format)
+                
+                # Reorder columns for better readability
+                column_order = [
+                    'Target Reliability',
+                    'Achieved Reliability',
+                    'Solar Capacity',
+                    'Battery Capacity',
+                    'Total Cost'
+                ]
+                history_df = history_df[column_order]
+                
                 st.dataframe(history_df, use_container_width=True)
                 
                 if st.button("Clear history"):
                     st.session_state.optimization_history = []
                     st.rerun()
-        
-        # Solar system parameters
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("System size")
-            solar_capacity_mw = st.slider(
-                "Solar plant DC capacity (MW)",
-                min_value=DEFAULT_PARAMETERS['solar_capacity_mw']['min'],
-                max_value=DEFAULT_PARAMETERS['solar_capacity_mw']['max'],
-                value=st.session_state.solar_capacity,
-                step=DEFAULT_PARAMETERS['solar_capacity_mw']['step'],
-                help=DEFAULT_PARAMETERS['solar_capacity_mw']['citation'],
-                key='solar_capacity_slider'
-            )
-            
-            solar_construction_time = st.slider(
-                "Solar construction time (years)",
-                min_value=DEFAULT_PARAMETERS['solar_construction_time']['min'],
-                max_value=DEFAULT_PARAMETERS['solar_construction_time']['max'],
-                value=DEFAULT_PARAMETERS['solar_construction_time']['value'],
-                step=DEFAULT_PARAMETERS['solar_construction_time']['step'],
-                help=DEFAULT_PARAMETERS['solar_construction_time']['citation']
-            )
-            
-            solar_replacement_cost_factor = st.slider(
-                "Solar replacement cost factor",
-                min_value=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['min'],
-                max_value=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['max'],
-                value=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['value'],
-                step=DEFAULT_PARAMETERS['solar_replacement_cost_factor']['step'],
-                help="Fraction of initial cost required for solar panel replacement (typically 70% due to reduced installation costs)",
-                format="%.2f"
-            )
-            
-            battery_capacity_mwh = st.slider(
-                "Battery storage capacity (MWh)",
-                min_value=DEFAULT_PARAMETERS['battery_capacity_mwh']['min'],
-                max_value=DEFAULT_PARAMETERS['battery_capacity_mwh']['max'],
-                value=st.session_state.battery_capacity,
-                step=DEFAULT_PARAMETERS['battery_capacity_mwh']['step'],
-                help=DEFAULT_PARAMETERS['battery_capacity_mwh']['citation'],
-                key='battery_capacity_slider'
-            )
-            
-            round_trip_efficiency_pct = st.slider(
-                "Battery round-trip efficiency (%)",
-                min_value=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['min'],
-                max_value=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['max'],
-                value=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['value'],
-                step=DEFAULT_PARAMETERS['round_trip_efficiency_pct']['step'],
-                help=f"{TOOLTIPS['battery_efficiency']} {DEFAULT_PARAMETERS['round_trip_efficiency_pct']['citation']}"
-            )
-        
-        with col2:
-            st.subheader("Cost parameters")
-            solar_module_cost = st.number_input(
-                "Solar module cost ($/kW)",
-                min_value=DEFAULT_PARAMETERS['solar_module_cost']['min'],
-                max_value=DEFAULT_PARAMETERS['solar_module_cost']['max'],
-                value=DEFAULT_PARAMETERS['solar_module_cost']['value'],
-                step=DEFAULT_PARAMETERS['solar_module_cost']['step'],
-                help=f"{TOOLTIPS['solar_module_cost']} {DEFAULT_PARAMETERS['solar_module_cost']['citation']}"
-            )
-            
-            battery_cost = st.number_input(
-                "Battery cost ($/kWh)",
-                min_value=DEFAULT_PARAMETERS['battery_cost']['min'],
-                max_value=DEFAULT_PARAMETERS['battery_cost']['max'],
-                value=DEFAULT_PARAMETERS['battery_cost']['value'],
-                step=DEFAULT_PARAMETERS['battery_cost']['step'],
-                help=f"{TOOLTIPS['battery_cost']} {DEFAULT_PARAMETERS['battery_cost']['citation']}"
-            )
-            
-            land_cost = st.number_input(
-                "Land cost ($/acre)",
-                min_value=DEFAULT_PARAMETERS['land_cost']['min'],
-                max_value=DEFAULT_PARAMETERS['land_cost']['max'],
-                value=DEFAULT_PARAMETERS['land_cost']['value'],
-                step=DEFAULT_PARAMETERS['land_cost']['step'],
-                help=DEFAULT_PARAMETERS['land_cost']['citation']
-            )
-            
-            solar_maintenance_cost = st.number_input(
-                "Annual maintenance cost ($/kW-year)",
-                min_value=DEFAULT_PARAMETERS['solar_maintenance_cost']['min'],
-                max_value=DEFAULT_PARAMETERS['solar_maintenance_cost']['max'],
-                value=DEFAULT_PARAMETERS['solar_maintenance_cost']['value'],
-                step=DEFAULT_PARAMETERS['solar_maintenance_cost']['step'],
-                help=f"{DEFAULT_PARAMETERS['solar_maintenance_cost']['citation']}"
-            )
         
         # Run simulation
         battery_soc, power_output, battery_charge, battery_discharge = simulate_battery_storage(
@@ -1391,13 +1456,13 @@ def main():
         )
         
         # Weekly data visualization
-        st.subheader("Weekly power and battery data")
+        st.subheader("Weekly solar power, battery, and plant power data")
         unique_dates = solar_data_dict[selected_site_data['file']]['LocalTime'].dt.date.unique()
         week_start_dates = [d for d in unique_dates if d.weekday() == 0]
         selected_week_start = st.selectbox(
-            "Select week start date",
+            "Select a start date for the graphic below. Note that the data come from a NREL model of 2006, but hopefully are useful to get a rough understanding of what the plant would do for a given time of year.",
             options=week_start_dates,
-            format_func=lambda x: x.strftime("%Y-%m-%d")
+            format_func=lambda x: x.strftime("%B %d")
         )
         
         weekly_fig = plot_weekly_data(
@@ -1411,7 +1476,7 @@ def main():
         )
         st.plotly_chart(weekly_fig, use_container_width=True)
     
-    with tab2:
+    with tab3:
         st.header("Nuclear system configuration")
         
         col1, col2 = st.columns(2)
@@ -1474,7 +1539,7 @@ def main():
                 help=DEFAULT_PARAMETERS['nuclear_decommissioning_cost']['citation']
             )
     
-    with tab3:
+    with tab4:
         st.header("Results & analysis")
         
         # Calculate costs
@@ -1521,12 +1586,15 @@ def main():
         )
         
         # Calculate LCOE components
-        solar_components, nuclear_components = calculate_lcoe_components(
+        solar_components, nuclear_components, solar_lcoe, nuclear_lcoe = calculate_lcoe_components(
             pv_costs,
+            solar_costs,
+            nuclear_costs,
             solar_annual_energy,
             nuclear_annual_energy,
             discount_rate_pct,
-            nuclear_construction_time
+            nuclear_construction_time,
+            solar_costs.get('solar_construction_time', 2)
         )
         
         # Create comparison table
@@ -1546,7 +1614,7 @@ def main():
         st.dataframe(
             comparison_df,
             use_container_width=True,
-            height=600,  # Set fixed height to 600 pixels
+            height=len(comparison_df) * 35 + 38,  # Adjust height based on number of rows
             hide_index=True  # Hide the index column
         )
         
